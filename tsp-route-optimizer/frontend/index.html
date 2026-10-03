@@ -36,7 +36,7 @@
     h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .5px;
          color: var(--muted); margin: 22px 0 8px; }
     label { display: block; font-size: 13px; margin: 8px 0 3px; color: var(--muted); }
-    input, button {
+    input, button, select {
       width: 100%; padding: 9px 10px; border-radius: 8px; font-size: 14px;
       border: 1px solid var(--line); background: #0f172a; color: var(--text);
     }
@@ -63,6 +63,15 @@
     .outlet-item button { width: auto; margin: 0; padding: 2px 8px; font-size: 12px;
                           background: #7f1d1d; color: #fecaca; }
     .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+    code { background: #0f172a; border: 1px solid var(--line); border-radius: 4px;
+           padding: 1px 5px; font-size: 12px; color: var(--accent); }
+    /* Cumulative route index table */
+    table.index { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+    table.index th, table.index td { text-align: left; padding: 6px 6px;
+           border-bottom: 1px solid var(--line); }
+    table.index th { color: var(--muted); font-weight: 600; font-size: 11px;
+           text-transform: uppercase; letter-spacing: .4px; }
+    table.index td.num { text-align: right; font-variant-numeric: tabular-nums; }
     /* Numbered markers drawn on the map */
     .stop-marker {
       background: var(--accent); color: #082f49; font-weight: 700;
@@ -108,10 +117,16 @@
 
     <!-- Optimise controls -->
     <h2>Optimise route</h2>
-    <div class="row">
+    <label>Distance mode</label>
+    <select id="f-mode">
+      <option value="road">Road network (real distances &amp; times)</option>
+      <option value="haversine">Straight-line (Haversine)</option>
+    </select>
+    <div class="row" style="margin-top:8px">
       <div>
         <label>Avg speed (km/h)</label>
         <input id="f-speed" type="number" step="any" value="30" />
+        <div class="hint">Only used for time in straight-line mode.</div>
       </div>
       <div>
         <label>&nbsp;</label>
@@ -125,6 +140,21 @@
 
     <!-- Results appear here after optimising -->
     <div id="results"></div>
+
+    <!-- Upload-your-own section. Hidden until the user has optimised once. -->
+    <div id="upload-section" style="display:none">
+      <h2>Use your own data</h2>
+      <div class="hint">
+        Upload a CSV of your depot and outlets to optimise your own network.
+      </div>
+      <input id="f-csv" type="file" accept=".csv,text/csv" style="padding:7px" />
+      <button onclick="uploadCsv()">Upload CSV &amp; replace outlets</button>
+      <button class="secondary" onclick="downloadTemplate()">Download CSV template</button>
+      <div class="hint">
+        Columns: <code>name, latitude, longitude, is_depot</code>.
+        Mark one row's <code>is_depot</code> as <code>true</code>.
+      </div>
+    </div>
 
     <!-- Current outlets list -->
     <h2>Outlets (<span id="count">0</span>)</h2>
@@ -217,21 +247,33 @@
     async function optimize() {
       const speed = parseFloat(document.getElementById("f-speed").value) || 30;
       const roundTrip = document.getElementById("f-roundtrip").checked;
+      const mode = document.getElementById("f-mode").value;
 
-      const res = await fetch(API + "/optimize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ round_trip: roundTrip, avg_speed_kmph: speed }),
-      });
+      // Road mode calls OSRM and can take a moment; show a quick "working" note.
+      const btn = event && event.target ? event.target : null;
+      if (btn) { btn.disabled = true; btn.textContent = "Optimising…"; }
 
-      if (!res.ok) {
-        const err = await res.json();
-        alert("Could not optimise: " + (err.detail || res.status));
-        return;
+      try {
+        const res = await fetch(API + "/optimize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            round_trip: roundTrip, avg_speed_kmph: speed, mode: mode,
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          alert("Could not optimise: " + (err.detail || res.status));
+          return;
+        }
+        const data = await res.json();
+        // Prefer the real road geometry if the backend returned it.
+        drawRoute(data.ordered_outlets, roundTrip, data.route_geometry);
+        renderResults(data);
+        markHasRun();  // unlock the "use your own data" upload section
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "Optimise route ⚡"; }
       }
-      const data = await res.json();
-      drawRoute(data.ordered_outlets, roundTrip);
-      renderResults(data);
     }
 
     // ----------------------------------------------------------------- //
@@ -252,7 +294,9 @@
     }
 
     // Draw the optimised route: numbered pins in visit order + a line connecting them.
-    function drawRoute(ordered, roundTrip) {
+    // `geometry` (optional) is the real road path as [lat,lng] pairs. When present
+    // we draw the actual roads; otherwise we fall back to straight lines between stops.
+    function drawRoute(ordered, roundTrip, geometry) {
       routeLayer.clearLayers();
       const coords = ordered.map((o) => [o.latitude, o.longitude]);
 
@@ -268,30 +312,55 @@
           .addTo(routeLayer);
       });
 
-      // If it's a round trip, close the loop back to the first stop.
-      const lineCoords = roundTrip ? [...coords, coords[0]] : coords;
-      L.polyline(lineCoords, { color: "#38bdf8", weight: 4, opacity: 0.8 })
+      // Prefer real road geometry; fall back to straight lines between stops.
+      let lineCoords;
+      if (geometry && geometry.length) {
+        lineCoords = geometry;               // follows actual roads
+      } else {
+        lineCoords = roundTrip ? [...coords, coords[0]] : coords;  // straight lines
+      }
+      L.polyline(lineCoords, { color: "#38bdf8", weight: 4, opacity: 0.85 })
         .addTo(routeLayer);
 
       // Zoom the map to fit the whole route nicely.
-      if (coords.length) map.fitBounds(L.polyline(lineCoords).getBounds().pad(0.15));
+      if (lineCoords.length) map.fitBounds(L.polyline(lineCoords).getBounds().pad(0.15));
     }
 
     // ----------------------------------------------------------------- //
     //  Rendering the sidebar lists                                      //
     // ----------------------------------------------------------------- //
     function renderResults(data) {
-      const stops = data.ordered_outlets
-        .map((o, i) => `<li>${o.name}${o.is_depot ? " <i>(depot)</i>" : ""}</li>`)
-        .join("");
+      // Friendly label for where the numbers came from.
+      const src = data.distance_source || "haversine";
+      let srcLabel;
+      if (src === "road") srcLabel = "🛣️ Real road network (OSRM)";
+      else if (src.startsWith("haversine (")) srcLabel = "📐 Straight-line (OSRM unavailable — using fallback)";
+      else srcLabel = "📐 Straight-line (Haversine)";
+
+      // Cumulative route index: distance + time to REACH each stop from the depot.
+      const rows = (data.route_index || []).map((r) => `
+        <tr>
+          <td>${r.order}</td>
+          <td>${r.name}${r.is_depot ? " <i>(depot)</i>" : ""}</td>
+          <td class="num">${r.cumulative_distance_km}</td>
+          <td class="num">${r.cumulative_time_minutes}</td>
+        </tr>`).join("");
+
       document.getElementById("results").innerHTML = `
         <div class="stats">
           <div class="stat"><div class="num">${data.total_distance_km}</div><div class="lbl">km total</div></div>
           <div class="stat"><div class="num">${data.total_time_minutes}</div><div class="lbl">min total</div></div>
           <div class="stat"><div class="num">${data.ordered_outlets.length}</div><div class="lbl">stops</div></div>
         </div>
-        <h2>Visit order</h2>
-        <ol>${stops}</ol>
+        <div class="hint">Distances via: ${srcLabel}</div>
+        <h2>Route index — distance from depot</h2>
+        <div class="hint">Cumulative distance &amp; time to reach each stop along the optimal route.</div>
+        <table class="index">
+          <thead>
+            <tr><th>#</th><th>Outlet</th><th style="text-align:right">Cum. km</th><th style="text-align:right">Cum. min</th></tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
       `;
     }
 
@@ -305,8 +374,78 @@
         .join("");
     }
 
-    // Load whatever is already in the DB when the page opens.
-    refreshOutlets();
+    // ----------------------------------------------------------------- //
+    //  First-open behaviour + "use your own data" unlock                //
+    // ----------------------------------------------------------------- //
+    // We remember (in the browser) whether the user has optimised at least
+    // once. Until they have, we keep things simple: just the sample dataset.
+    // After the first run, we reveal the "upload your own data" section.
+    function hasRunBefore() {
+      try { return localStorage.getItem("tsp_has_run") === "1"; }
+      catch (e) { return false; }
+    }
+    function markHasRun() {
+      try { localStorage.setItem("tsp_has_run", "1"); } catch (e) {}
+      document.getElementById("upload-section").style.display = "block";
+    }
+
+    // Upload a CSV of the user's own depot + outlets (replaces current data).
+    async function uploadCsv() {
+      const input = document.getElementById("f-csv");
+      if (!input.files || !input.files[0]) {
+        alert("Choose a CSV file first.");
+        return;
+      }
+      const text = await input.files[0].text();   // read file contents in-browser
+      const res = await fetch(API + "/outlets/upload", {
+        method: "POST",
+        headers: { "Content-Type": "text/csv" },
+        body: text,                                // send CSV as the request body
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert("Upload failed: " + (data.detail || res.status));
+        return;
+      }
+      let msg = `Loaded ${data.added} outlet(s).`;
+      if (data.skipped) msg += `\nSkipped ${data.skipped} row(s):\n` + data.errors.join("\n");
+      alert(msg);
+      input.value = "";
+      await refreshOutlets();   // show the new outlets; user can now optimise
+    }
+
+    // Offer a ready-made CSV template so the format is obvious.
+    function downloadTemplate() {
+      const sample = [
+        "name,latitude,longitude,is_depot",
+        "Central Warehouse,12.9767,77.5713,true",
+        "Outlet A,12.9352,77.6245,false",
+        "Outlet B,12.9719,77.6412,false",
+      ].join("\n");
+      const blob = new Blob([sample], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "outlets_template.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // On first open: if the database is empty, auto-load the sample dataset so
+    // the user can run immediately. Then draw whatever outlets exist.
+    async function initialLoad() {
+      const res = await fetch(API + "/outlets");
+      const outlets = await res.json();
+      if (outlets.length === 0) {
+        await fetch(API + "/seed", { method: "POST" });  // auto-seed sample data
+      }
+      if (hasRunBefore()) {
+        document.getElementById("upload-section").style.display = "block";
+      }
+      await refreshOutlets();
+    }
+
+    initialLoad();
   </script>
 </body>
 </html>

@@ -12,7 +12,7 @@ Think of each class as a contract: "a request/response of this kind MUST
 look exactly like this."
 """
 
-from typing import List, Optional
+from typing import List, Optional, Literal
 from pydantic import BaseModel, Field
 
 
@@ -47,7 +47,12 @@ class OptimizeRequest(BaseModel):
         True, description="If True the route returns to the start (a loop)."
     )
     avg_speed_kmph: float = Field(
-        30.0, gt=0, description="Average driving speed used to estimate time."
+        30.0, gt=0, description="Fallback speed, only used to estimate time when road times aren't available."
+    )
+    mode: Literal["road", "haversine"] = Field(
+        "road",
+        description="'road' = real distances/times via OSRM (falls back to haversine if offline); "
+                    "'haversine' = straight-line only.",
     )
 
 
@@ -62,9 +67,25 @@ class Leg(BaseModel):
         populate_by_name = True  # allow building with either 'from_' or 'from'
 
 
+class RouteIndexEntry(BaseModel):
+    """One row of the cumulative route index: distance/time to REACH this stop."""
+    order: int                      # 1 = depot, 2 = first stop reached, ...
+    name: str
+    is_depot: bool
+    cumulative_distance_km: float   # total km from depot to here along the route
+    cumulative_time_minutes: float  # total minutes from depot to here
+
+
 class OptimizeResponse(BaseModel):
     """The full answer the API returns after solving the TSP."""
     ordered_outlets: List[Outlet]
     total_distance_km: float
     total_time_minutes: float
     leg_details: List[Leg]
+    route_index: List[RouteIndexEntry] = []
+    # Where the numbers came from: "road", "haversine",
+    # or "haversine (OSRM unavailable)" when a road request fell back.
+    distance_source: str = "haversine"
+    # The real road path to draw on the map, as [lat, lon] pairs.
+    # None when using straight-line mode or if geometry couldn't be fetched.
+    route_geometry: Optional[List[List[float]]] = None

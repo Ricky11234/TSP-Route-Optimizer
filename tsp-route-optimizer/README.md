@@ -24,9 +24,12 @@ end-to-end.
 - **Store delivery outlets** (name + latitude/longitude) in a database.
 - **Mark one outlet as the depot** — the warehouse you start and end at.
 - **Compute the optimal visit order** using a TSP heuristic (Nearest-Neighbour + 2-opt).
-- **Visualize the route** on an interactive Leaflet map, with numbered stops.
-- **See the numbers that matter:** total kilometres and total minutes.
-- **Manage data easily:** add outlets by clicking the map, delete them, or load a built-in sample dataset.
+- **Use real road distances & drive times** via the OSRM routing engine — or switch to straight-line (Haversine) mode with a toggle.
+- **Visualize the route** on an interactive Leaflet map, drawn along the actual roads, with numbered stops.
+- **See the numbers that matter:** total kilometres and total minutes (real drive time in road mode).
+- **Route index:** a table of the cumulative distance & time to reach each stop from the depot along the optimal route.
+- **Start instantly, then bring your own data:** the sample dataset loads on first open; after your first run, upload a CSV of your own depot + outlets (a template is one click away).
+- **Manage data easily:** add outlets by clicking the map, delete them, or reload the sample dataset.
 
 ---
 
@@ -36,7 +39,7 @@ end-to-end.
 |-------|------------|-------------------|
 | **Backend API** | [FastAPI](https://fastapi.tiangolo.com/) | Modern, fast, and auto-generates interactive API docs at `/docs`. |
 | **Algorithm** | Pure Python (Nearest-Neighbour + 2-opt) | No black-box solver library — the TSP logic is fully readable. |
-| **Distance model** | Haversine formula | Great-circle distance; no API key, works fully offline. |
+| **Distance model** | OSRM road network + Haversine fallback | Real driving distance/time from [OSRM](http://project-osrm.org/) (no API key), with straight-line Haversine as an automatic offline fallback. |
 | **Database** | SQLite (via built-in `sqlite3`) | A real SQL database in a single file; raw SQL, no ORM. |
 | **Frontend** | HTML + vanilla JS + [Leaflet.js](https://leafletjs.com/) | A real interactive map with **zero build step**. |
 | **Packaging** | [uv](https://docs.astral.sh/uv/) | Fast, reproducible dependency management (`pyproject.toml` + `uv.lock`). |
@@ -50,7 +53,7 @@ tsp-route-optimizer/
 ├── backend/
 │   ├── main.py         # FastAPI app: routes, validation, serves the frontend
 │   ├── tsp_solver.py   # The TSP algorithm: Nearest-Neighbour + 2-opt
-│   ├── distance.py     # Haversine distance, distance matrix, travel time
+│   ├── distance.py     # OSRM road distance/time + geometry, Haversine fallback
 │   ├── models.py       # Pydantic models (request/response contracts)
 │   ├── database.py     # SQLite storage (raw SQL)
 │   └── seed_data.py    # Sample outlets for the demo
@@ -144,6 +147,22 @@ Open your browser to:
 
 To stop the server, press **Ctrl + C** in the terminal.
 
+### Using your own data
+
+The sample dataset loads automatically on first open. **After you optimise
+once**, a "Use your own data" panel appears where you can upload a CSV of your
+own depot and outlets. Click **Download CSV template** for the exact format:
+
+```csv
+name,latitude,longitude,is_depot
+Central Warehouse,12.9767,77.5713,true
+Outlet A,12.9352,77.6245,false
+Outlet B,12.9719,77.6412,false
+```
+
+- `is_depot` marks your start/end point (`true` for one row; the rest `false`).
+- Invalid rows are skipped and reported, so a small typo won't break the upload.
+
 > **No uv?** You can fall back to pip instead of steps 2, 4, and 5:
 > ```bash
 > pip install -r requirements.txt
@@ -160,7 +179,8 @@ To stop the server, press **Ctrl + C** in the terminal.
 | `POST` | `/outlets` | Add a new outlet |
 | `DELETE` | `/outlets/{id}` | Delete an outlet |
 | `POST` | `/seed` | Reset to the sample dataset |
-| `POST` | `/optimize` | Compute the optimal route |
+| `POST` | `/outlets/upload` | Replace outlets from an uploaded CSV |
+| `POST` | `/optimize` | Compute the optimal route (returns a cumulative route index) |
 | `GET` | `/` | Serves the map UI |
 
 **Example — optimise a route:**
@@ -198,7 +218,24 @@ two-phase **heuristic**:
    remove "crossings," until no single swap helps anymore (a local optimum).
 
 Together they land within a few percent of optimal in milliseconds. On the
-sample data, 2-opt improves the route from **88.0 km → 82.9 km (~6%)**.
+sample data, 2-opt improves the route from **88.0 km → 82.9 km (~6%)**
+(straight-line); in road mode the solver optimizes on real driving distances
+instead.
+
+### Distance: road vs straight-line
+
+The `/optimize` endpoint accepts a `mode`:
+
+- **`"road"` (default)** — calls the **OSRM** `/table` service, which returns the
+  full road-distance *and* drive-time matrix in a single request. The route is
+  then drawn along the actual roads using OSRM's `/route` geometry. No API key
+  required (uses the public demo server).
+- **`"haversine"`** — pure straight-line math, fully offline.
+
+If a road request can't reach OSRM, it **automatically falls back to Haversine**
+and labels the result accordingly, so the app never breaks. All of this lives in
+`distance.py` — the solver and API don't care how a distance was obtained, which
+is a clean example of separation of concerns.
 
 ---
 
@@ -216,7 +253,7 @@ proposition for any logistics or last-mile delivery operation.
 
 - **Multiple vehicles** → the Vehicle Routing Problem (VRP).
 - **Delivery time windows** and per-outlet priorities.
-- **Real road distances/times** via OSRM or Google Distance Matrix (swap only `distance.py`).
+- **Self-hosted OSRM** (Docker) for no rate limits and full offline road routing.
 - **Stronger optimization** — Or-opt / 3-opt, simulated annealing, or Google OR-Tools.
 - **Export routes** to Google Maps navigation links.
 
@@ -226,9 +263,10 @@ proposition for any logistics or last-mile delivery operation.
 
 - The solver finds a **near-optimal** route (heuristic), not a provably
   optimal one — an honest and standard trade-off for realistic sizes.
-- Distances are **straight-line (Haversine)**, a good proxy but not actual
-  driving distance. The distance logic is isolated behind one function, so
-  swapping in a real routing engine touches only `distance.py`.
+- Road distances come from the **public OSRM demo server**, which is
+  rate-limited and "best effort" — great for a demo, but for production you'd
+  self-host OSRM (Docker) or use a paid routing API. The straight-line fallback
+  keeps the app usable regardless.
 - Storage uses **SQLite** for zero-setup simplicity; the storage layer is
   isolated in `database.py`, so moving to PostgreSQL later wouldn't affect the
   API or the solver.
