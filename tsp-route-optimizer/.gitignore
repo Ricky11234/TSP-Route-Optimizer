@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# The SQLite database is generated at runtime; don't commit it.
+data/*.db
+
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/

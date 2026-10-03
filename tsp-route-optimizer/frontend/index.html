@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TSP Route Optimizer</title>
+
+  <!--
+    Leaflet.js = a tiny, beginner-friendly mapping library.
+    We load its CSS and JS from a CDN so there is NO build step.
+    Map tiles come from OpenStreetMap (free, no API key).
+  -->
+  <link rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    /* ---- Simple, readable styling. Nothing fancy, easy to explain. ---- */
+    :root {
+      --bg: #0f172a; --panel: #1e293b; --accent: #38bdf8;
+      --text: #e2e8f0; --muted: #94a3b8; --line: #334155;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg); color: var(--text); display: flex; height: 100vh;
+    }
+    /* Left: the controls panel. Right: the map fills the rest. */
+    #sidebar {
+      width: 380px; min-width: 380px; padding: 20px; overflow-y: auto;
+      background: var(--panel); border-right: 1px solid var(--line);
+    }
+    #map { flex: 1; }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+    h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .5px;
+         color: var(--muted); margin: 22px 0 8px; }
+    label { display: block; font-size: 13px; margin: 8px 0 3px; color: var(--muted); }
+    input, button {
+      width: 100%; padding: 9px 10px; border-radius: 8px; font-size: 14px;
+      border: 1px solid var(--line); background: #0f172a; color: var(--text);
+    }
+    button {
+      background: var(--accent); color: #082f49; font-weight: 600; cursor: pointer;
+      border: none; margin-top: 10px;
+    }
+    button.secondary { background: #334155; color: var(--text); }
+    button:hover { opacity: .9; }
+    .row { display: flex; gap: 8px; }
+    .row > * { flex: 1; }
+    .checkbox-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+    .checkbox-row input { width: auto; }
+    /* Stats cards after optimising */
+    .stats { display: flex; gap: 10px; margin-top: 8px; }
+    .stat { flex: 1; background: #0f172a; border: 1px solid var(--line);
+            border-radius: 8px; padding: 10px; text-align: center; }
+    .stat .num { font-size: 20px; font-weight: 700; color: var(--accent); }
+    .stat .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+    /* Ordered stop list */
+    ol { padding-left: 20px; font-size: 13px; line-height: 1.6; }
+    .outlet-item { font-size: 13px; padding: 6px 0; border-bottom: 1px solid var(--line);
+                   display: flex; justify-content: space-between; }
+    .outlet-item button { width: auto; margin: 0; padding: 2px 8px; font-size: 12px;
+                          background: #7f1d1d; color: #fecaca; }
+    .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+    /* Numbered markers drawn on the map */
+    .stop-marker {
+      background: var(--accent); color: #082f49; font-weight: 700;
+      border-radius: 50%; width: 26px; height: 26px; display: flex;
+      align-items: center; justify-content: center; border: 2px solid #fff;
+      font-size: 13px;
+    }
+    .depot-marker { background: #f59e0b; }
+  </style>
+</head>
+<body>
+  <!-- ===================== LEFT SIDEBAR ===================== -->
+  <div id="sidebar">
+    <h1>🚚 TSP Route Optimizer</h1>
+    <div class="subtitle">Optimal delivery routes via the Travelling Salesman Problem</div>
+
+    <!-- Data controls -->
+    <div class="row">
+      <button class="secondary" onclick="loadSampleData()">Load sample data</button>
+      <button class="secondary" onclick="refreshOutlets()">Refresh</button>
+    </div>
+
+    <!-- Add-outlet form. Tip: click anywhere on the map to auto-fill lat/lng. -->
+    <h2>Add an outlet</h2>
+    <label>Name</label>
+    <input id="f-name" placeholder="e.g. Koramangala Hub" />
+    <div class="row">
+      <div>
+        <label>Latitude</label>
+        <input id="f-lat" type="number" step="any" placeholder="12.9352" />
+      </div>
+      <div>
+        <label>Longitude</label>
+        <input id="f-lng" type="number" step="any" placeholder="77.6245" />
+      </div>
+    </div>
+    <div class="checkbox-row">
+      <input id="f-depot" type="checkbox" />
+      <label style="margin:0">This is the depot (start point)</label>
+    </div>
+    <button onclick="addOutlet()">Add outlet</button>
+    <div class="hint">Tip: click on the map to fill latitude/longitude.</div>
+
+    <!-- Optimise controls -->
+    <h2>Optimise route</h2>
+    <div class="row">
+      <div>
+        <label>Avg speed (km/h)</label>
+        <input id="f-speed" type="number" step="any" value="30" />
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <div class="checkbox-row" style="margin-top:9px">
+          <input id="f-roundtrip" type="checkbox" checked />
+          <label style="margin:0">Return to start</label>
+        </div>
+      </div>
+    </div>
+    <button onclick="optimize()">Optimise route ⚡</button>
+
+    <!-- Results appear here after optimising -->
+    <div id="results"></div>
+
+    <!-- Current outlets list -->
+    <h2>Outlets (<span id="count">0</span>)</h2>
+    <div id="outlet-list"></div>
+  </div>
+
+  <!-- ===================== RIGHT: MAP ===================== -->
+  <div id="map"></div>
+
+  <script>
+    // ----------------------------------------------------------------- //
+    //  Config                                                           //
+    // ----------------------------------------------------------------- //
+    // API base. Empty string => same origin (FastAPI serves this page),
+    // so fetch("/outlets") just works. If you open the HTML file on its
+    // own, set this to "http://127.0.0.1:8000".
+    const API = "";
+
+    // ----------------------------------------------------------------- //
+    //  Map setup                                                        //
+    // ----------------------------------------------------------------- //
+    // Create the Leaflet map centred on Bengaluru.
+    const map = L.map("map").setView([12.97, 77.62], 11);
+
+    // Add the OpenStreetMap tile layer (the actual map imagery).
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "© OpenStreetMap contributors",
+    }).addTo(map);
+
+    // We keep references to drawn layers so we can clear them each redraw.
+    let markerLayer = L.layerGroup().addTo(map);   // the outlet pins
+    let routeLayer = L.layerGroup().addTo(map);    // the route line
+
+    // Clicking the map fills the lat/lng inputs — handy for adding outlets.
+    map.on("click", (e) => {
+      document.getElementById("f-lat").value = e.latlng.lat.toFixed(5);
+      document.getElementById("f-lng").value = e.latlng.lng.toFixed(5);
+    });
+
+    // ----------------------------------------------------------------- //
+    //  API calls (each maps 1:1 to a FastAPI endpoint)                  //
+    // ----------------------------------------------------------------- //
+    async function refreshOutlets() {
+      const res = await fetch(API + "/outlets");
+      const outlets = await res.json();
+      drawOutlets(outlets);
+      renderOutletList(outlets);
+      document.getElementById("count").textContent = outlets.length;
+      // Clear any old route when the outlet set changes.
+      routeLayer.clearLayers();
+      document.getElementById("results").innerHTML = "";
+    }
+
+    async function loadSampleData() {
+      await fetch(API + "/seed", { method: "POST" });
+      await refreshOutlets();
+    }
+
+    async function addOutlet() {
+      const name = document.getElementById("f-name").value.trim();
+      const lat = parseFloat(document.getElementById("f-lat").value);
+      const lng = parseFloat(document.getElementById("f-lng").value);
+      const isDepot = document.getElementById("f-depot").checked;
+
+      if (!name || isNaN(lat) || isNaN(lng)) {
+        alert("Please enter a name and valid latitude/longitude.");
+        return;
+      }
+      // POST the new outlet. The body shape must match OutletCreate in models.py.
+      await fetch(API + "/outlets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name, address: "", latitude: lat, longitude: lng, is_depot: isDepot,
+        }),
+      });
+      // Clear the form and refresh.
+      document.getElementById("f-name").value = "";
+      document.getElementById("f-lat").value = "";
+      document.getElementById("f-lng").value = "";
+      document.getElementById("f-depot").checked = false;
+      await refreshOutlets();
+    }
+
+    async function deleteOutlet(id) {
+      await fetch(API + "/outlets/" + id, { method: "DELETE" });
+      await refreshOutlets();
+    }
+
+    async function optimize() {
+      const speed = parseFloat(document.getElementById("f-speed").value) || 30;
+      const roundTrip = document.getElementById("f-roundtrip").checked;
+
+      const res = await fetch(API + "/optimize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ round_trip: roundTrip, avg_speed_kmph: speed }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        alert("Could not optimise: " + (err.detail || res.status));
+        return;
+      }
+      const data = await res.json();
+      drawRoute(data.ordered_outlets, roundTrip);
+      renderResults(data);
+    }
+
+    // ----------------------------------------------------------------- //
+    //  Drawing helpers                                                  //
+    // ----------------------------------------------------------------- //
+    function drawOutlets(outlets) {
+      markerLayer.clearLayers();
+      outlets.forEach((o) => {
+        const icon = L.divIcon({
+          className: "",
+          html: `<div class="stop-marker ${o.is_depot ? "depot-marker" : ""}">${o.is_depot ? "★" : "•"}</div>`,
+          iconSize: [26, 26],
+        });
+        L.marker([o.latitude, o.longitude], { icon })
+          .bindPopup(`<b>${o.name}</b><br>${o.is_depot ? "Depot" : "Outlet"}`)
+          .addTo(markerLayer);
+      });
+    }
+
+    // Draw the optimised route: numbered pins in visit order + a line connecting them.
+    function drawRoute(ordered, roundTrip) {
+      routeLayer.clearLayers();
+      const coords = ordered.map((o) => [o.latitude, o.longitude]);
+
+      // Numbered markers showing the visit sequence.
+      ordered.forEach((o, i) => {
+        const icon = L.divIcon({
+          className: "",
+          html: `<div class="stop-marker ${o.is_depot ? "depot-marker" : ""}">${i + 1}</div>`,
+          iconSize: [26, 26],
+        });
+        L.marker([o.latitude, o.longitude], { icon })
+          .bindPopup(`<b>Stop ${i + 1}: ${o.name}</b>`)
+          .addTo(routeLayer);
+      });
+
+      // If it's a round trip, close the loop back to the first stop.
+      const lineCoords = roundTrip ? [...coords, coords[0]] : coords;
+      L.polyline(lineCoords, { color: "#38bdf8", weight: 4, opacity: 0.8 })
+        .addTo(routeLayer);
+
+      // Zoom the map to fit the whole route nicely.
+      if (coords.length) map.fitBounds(L.polyline(lineCoords).getBounds().pad(0.15));
+    }
+
+    // ----------------------------------------------------------------- //
+    //  Rendering the sidebar lists                                      //
+    // ----------------------------------------------------------------- //
+    function renderResults(data) {
+      const stops = data.ordered_outlets
+        .map((o, i) => `<li>${o.name}${o.is_depot ? " <i>(depot)</i>" : ""}</li>`)
+        .join("");
+      document.getElementById("results").innerHTML = `
+        <div class="stats">
+          <div class="stat"><div class="num">${data.total_distance_km}</div><div class="lbl">km total</div></div>
+          <div class="stat"><div class="num">${data.total_time_minutes}</div><div class="lbl">min total</div></div>
+          <div class="stat"><div class="num">${data.ordered_outlets.length}</div><div class="lbl">stops</div></div>
+        </div>
+        <h2>Visit order</h2>
+        <ol>${stops}</ol>
+      `;
+    }
+
+    function renderOutletList(outlets) {
+      document.getElementById("outlet-list").innerHTML = outlets
+        .map((o) => `
+          <div class="outlet-item">
+            <span>${o.is_depot ? "★ " : ""}${o.name}</span>
+            <button onclick="deleteOutlet(${o.id})">✕</button>
+          </div>`)
+        .join("");
+    }
+
+    // Load whatever is already in the DB when the page opens.
+    refreshOutlets();
+  </script>
+</body>
+</html>

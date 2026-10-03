@@ -1,0 +1,14 @@
+# ---- Python dependencies for the TSP Route Optimizer backend ----
+# Install everything with:   pip install -r requirements.txt
+#
+# We deliberately keep this list TINY. Every library here is easy to
+# justify in an interview, and nothing hides the TSP algorithm from you.
+
+fastapi==0.115.0        # The web framework. Gives us routing + automatic Swagger docs at /docs
+uvicorn[standard]==0.30.6  # The ASGI server that actually runs the FastAPI app
+pydantic==2.9.2         # Data validation. FastAPI uses it to validate request/response bodies
+
+# NOTE: We intentionally do NOT use:
+#   - A TSP library (ortools, networkx) -> we write the algorithm ourselves so we can explain it.
+#   - An ORM (SQLAlchemy) -> we use Python's built-in sqlite3 so the SQL is visible.
+#   - A frontend framework (React) -> plain HTML + Leaflet.js, no build step.
